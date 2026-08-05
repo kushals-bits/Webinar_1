@@ -14,11 +14,16 @@ Data_creation/
 │   ├── profiled_data.xlsx        # Profiled data + summary (Stage 2 output)
 │   ├── qa_checked_data.xlsx      # QA scorecard + flagged issues (Stage 3 output)
 │   └── imputed_data.xlsx         # Cleaned & imputed data (Stage 4 output)
-└── scripts/                      # All Python scripts
-    ├── data_create.py            # Stage 1: Generate synthetic student data
-    ├── Data_profiling.py         # Stage 2: Profile and summarise the dataset
-    ├── QA_check.py               # Stage 3: Quality assessment (5 dimensions)
-    └── imputation_data.py        # Stage 4: Clean, impute, and compare scores
+├── scripts/                      # Python scripts (standalone)
+│   ├── Data_create.py            # Stage 1: Generate synthetic student data
+│   ├── Data_profiling.py         # Stage 2: Profile and summarise the dataset
+│   ├── QA_check.py               # Stage 3: Quality assessment (5 dimensions)
+│   └── imputation_data.py        # Stage 4: Clean, impute, and compare scores
+└── notebooks/                    # Jupyter Notebook versions
+    ├── Data_create.ipynb          # Stage 1 notebook
+    ├── Data_profiling.ipynb       # Stage 2 notebook
+    ├── QA_check.ipynb             # Stage 3 notebook
+    └── imputation_data.ipynb      # Stage 4 notebook
 ```
 
 ## Pipeline Stages
@@ -46,16 +51,27 @@ pip install pandas numpy scikit-learn openpyxl
 
 ## How to Run
 
+### Option A — Python scripts
+
 Run the scripts in order from the project root:
 
 ```bash
-python scripts/data_create.py
+python scripts/Data_create.py
 python scripts/Data_profiling.py
 python scripts/QA_check.py
 python scripts/imputation_data.py
 ```
 
-Each script reads from `data/` and writes its output back to `data/`, so the pipeline is fully self-contained.
+### Option B — Jupyter Notebooks
+
+Open any notebook from the `notebooks/` directory in Jupyter, VS Code, or Google Colab and run the cells in order:
+
+```bash
+cd notebooks
+jupyter notebook
+```
+
+Both options read from `data/` and write output back to `data/`, so the pipeline is fully self-contained.
 
 ## Tech Stack
 
