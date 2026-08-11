@@ -1,24 +1,23 @@
-# Webinar 1 — Data Quality Pipeline
+# Webinar 1 — The AI-Ready Data Audit
 
-A hands-on data quality pipeline that walks through the full lifecycle of creating, profiling, validating, and cleaning a student dataset using Python and Pandas.
+A hands-on data quality pipeline that walks through the full lifecycle of creating, profiling, validating, and cleaning a student dataset using Python and Pandas. Designed for advanced IT professionals — architectural comments address enterprise concerns like LLM hallucinations, Data Leakage, the Accuracy Paradox, and automated pipeline triggers.
 
 ## Project Structure
 
 ```
 Data_creation/
 ├── README.md
-├── session_notes_4th_August.md
 ├── .gitignore
-├── data/                         # All Excel data files
+├── data/                         # All data files
 │   ├── student_data.xlsx         # Raw generated data (Stage 1 output)
 │   ├── profiled_data.xlsx        # Profiled data + summary (Stage 2 output)
 │   ├── qa_checked_data.xlsx      # QA scorecard + flagged issues (Stage 3 output)
 │   └── imputed_data.xlsx         # Cleaned & imputed data (Stage 4 output)
 ├── scripts/                      # Python scripts (standalone)
 │   ├── Data_create.py            # Stage 1: Generate synthetic student data
-│   ├── Data_profiling.py         # Stage 2: Profile and summarise the dataset
-│   ├── QA_check.py               # Stage 3: Quality assessment (5 dimensions)
-│   └── imputation_data.py        # Stage 4: Clean, impute, and compare scores
+│   ├── Data_profiling.py         # Stage 2: Profile, Kurtosis, LLM defense
+│   ├── QA_check.py               # Stage 3: Quality checks (4 dimensions)
+│   └── imputation_data.py        # Stage 4: Median, Mode, KNN imputation
 └── notebooks/                    # Jupyter Notebook versions
     ├── Data_create.ipynb          # Stage 1 notebook
     ├── Data_profiling.ipynb       # Stage 2 notebook
@@ -30,18 +29,36 @@ Data_creation/
 
 | Stage | Script | Input | Output | Description |
 |-------|--------|-------|--------|-------------|
-| 1 | `data_create.py` | — | `student_data.xlsx` | Generates 40 student records with intentional data quality issues (missing values, duplicates, invalid entries, inconsistent city names) |
-| 2 | `Data_profiling.py` | `student_data.xlsx` | `profiled_data.xlsx` | Profiles the dataset — data types, missing values, unique value counts, and statistical summaries |
-| 3 | `QA_check.py` | `profiled_data.xlsx` | `qa_checked_data.xlsx` | Scores the dataset on 5 quality dimensions: Completeness, Validity, Uniqueness, Consistency, and Accuracy |
+| 1 | `Data_create.py` | — | `student_data.xlsx` | Generates 40 student records with intentional data quality issues (missing values, duplicates, invalid entries, inconsistent city names, unstructured teacher notes) |
+| 2 | `Data_profiling.py` | `student_data.xlsx` | `profiled_data.xlsx` | Profiles the dataset — data types, missing values, Kurtosis analysis, LLM defense architecture |
+| 3 | `QA_check.py` | `profiled_data.xlsx` | `qa_checked_data.xlsx` | Scores on 4 quality dimensions: Completeness, Validity, Uniqueness, Consistency |
 | 4 | `imputation_data.py` | `qa_checked_data.xlsx` | `imputed_data.xlsx` | Cleans and imputes using 3 methods (Median, Mode, KNN) and produces before/after quality comparison |
+
+## Dataset Schema
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `student_id` | int | Unique student identifier |
+| `marks_math` | float | Math exam score (0–100) |
+| `marks_science` | float | Science exam score (0–100) |
+| `attendance_pct` | float | Attendance percentage (0–100) |
+| `city` | string | Student's city |
+| `teacher_notes` | string | Free-text teacher observations (unstructured — for downstream RAG/LLM pipeline) |
 
 ## Quality Dimensions Assessed
 
 - **Completeness** — % of non-missing values
 - **Validity** — values within allowed ranges (e.g., marks 0–100)
-- **Uniqueness** — no unwarranted duplicate rows
-- **Consistency** — uniform representation (e.g., "delhi", "Delhi", "delhi " → "Delhi")
-- **Accuracy** — qualitative flags for suspicious values
+- **Uniqueness** — no unwarranted duplicate rows (Data Leakage prevention)
+- **Consistency** — uniform representation (e.g., 'Bangalore' → 'Bengaluru')
+
+## Architectural Topics Covered
+
+- **LLM Hallucination Defense** — why tabular cleaning is a prerequisite for RAG
+- **Kurtosis Circuit Breaker** — automated Mean → Median switching in pipelines
+- **Data Leakage & the Accuracy Paradox** — duplicate rows inflating model metrics
+- **KNN Imputation** — preserving sub-group variance vs. flat average fill
+- **Hard-Capping vs. Model-Based Outlier Detection** — K-Means, Isolation Forest, DBSCAN
 
 ## Prerequisites
 

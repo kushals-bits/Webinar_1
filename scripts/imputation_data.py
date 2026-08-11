@@ -8,27 +8,52 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SCRIPT_DIR, "..", "data")
 
 # =====================================================================
-# Imputation & Cleaning Stage
-# Reads  : qa_checked_data.xlsx  (raw_data sheet + scorecard sheet)
-# Writes : imputed_data.xlsx     (input for next stage)
+# Rescue, Reject & KNN Imputation
+# Reads  : qa_checked_data.xlsx  (raw_data sheet)
+# Writes : imputed_data.xlsx
+#
+# Three imputation strategies:
+#   1. Median — attendance_pct (supplementary numeric, safe central fill)
+#   2. Mode   — city (categorical, most frequent value)
+#   3. KNN    — marks_math (segment-significant, flat median destroys
+#               the struggling-vs-gifted distribution)
+#
+# ARCHITECTURAL NOTE — Why KNN, Not the Average:
+# ---------------------------------------------------------------
+# Plugging the global average math score into every missing cell
+# destroys the distribution of struggling vs. gifted students.
+# KNN finds the k=5 students whose marks_science and attendance_pct
+# are most similar, then infers the missing math score from those
+# neighbours.  This preserves sub-group variance.
+#
+# ARCHITECTURAL NOTE — Hard-Capping vs. Model-Based Outliers:
+# ---------------------------------------------------------------
+# The clip() below is deterministic and interpretable — suitable when
+# business rules define explicit valid ranges (marks 0-100, attendance
+# 0-100).  Enterprise outliers that are contextually anomalous (e.g.,
+# high attendance + very low marks) require model-based detection:
+# K-Means clustering, Isolation Forests, or DBSCAN.
 # =====================================================================
 
 # --- Read input from QA stage ---
 input_file = os.path.join(DATA_DIR, "qa_checked_data.xlsx")
 df = pd.read_excel(input_file, sheet_name="raw_data", engine="openpyxl")
-qa_scorecard = pd.read_excel(input_file, sheet_name="scorecard", engine="openpyxl")
-print(f"Loaded : {input_file}  ({df.shape[0]} rows, {df.shape[1]} cols)")
+
+print("=" * 60)
+print("  NOTEBOOK 4 — RESCUE, REJECT & KNN IMPUTATION")
+print("=" * 60)
+print(f"\n✅ Loaded: {input_file}  ({df.shape[0]} rows, {df.shape[1]} cols)")
 
 
 # =====================================================================
-# Quality-scoring function (same 4 quantitative dimensions as QA stage)
+# Quality-scoring function (same 4 dimensions as QA stage)
 # =====================================================================
 VALIDITY_RULES = {
-    "attendance_pct": (0, 100),
     "marks_math":     (0, 100),
     "marks_science":  (0, 100),
-    "marks_english":  (0, 100),
+    "attendance_pct": (0, 100),
 }
+
 
 def score_dataset(data: pd.DataFrame) -> pd.DataFrame:
     """Return a scorecard DataFrame with one row per quality dimension."""
@@ -54,7 +79,9 @@ def score_dataset(data: pd.DataFrame) -> pd.DataFrame:
     city_raw = data["city"].dropna()
     distinct_raw = city_raw.nunique()
     distinct_norm = city_raw.str.strip().str.title().nunique()
-    consistency = round((distinct_norm / distinct_raw) * 100, 1) if distinct_raw else 100.0
+    consistency = (
+        round((distinct_norm / distinct_raw) * 100, 1) if distinct_raw else 100.0
+    )
 
     return pd.DataFrame([
         {"dimension": "Completeness", "score_pct": completeness},
@@ -65,33 +92,31 @@ def score_dataset(data: pd.DataFrame) -> pd.DataFrame:
 
 
 # =====================================================================
-# BEFORE scores (from the raw data as-is)
+# BEFORE scores (snapshot the raw data quality)
 # =====================================================================
 before_scores = score_dataset(df)
 
 print(f"\n{'=' * 60}")
-print("BEFORE IMPUTATION — quality scores")
+print("BEFORE CLEANING — Quality Scores")
 print("=" * 60)
 print(before_scores.to_string(index=False))
 print(f"Overall: {round(before_scores['score_pct'].mean(), 1)}%")
 
 
 # =====================================================================
-# CLEANING  (fix validity & consistency before imputing)
+# STEP 1: Fix Consistency & Drop Duplicates
 # =====================================================================
 df_clean = df.copy()
 
-# Fix validity: cap impossible values to allowed range
-df_clean["attendance_pct"] = df_clean["attendance_pct"].clip(0, 100)
-df_clean["marks_science"]  = df_clean["marks_science"].clip(0, 100)
-
-# Fix consistency: normalise city spellings
+# Consistency fix: canonical city mapping
 city_map = {
-    "delhi":     "Delhi",
-    "new delhi": "Delhi",
-    "mumbai":    "Mumbai",
-    "jaipur":    "Jaipur",
+    "delhi":      "Delhi",
+    "mumbai":     "Mumbai",
+    "bangalore":  "Bengaluru",
+    "bengaluru":  "Bengaluru",
+    "jaipur":     "Jaipur",
 }
+
 df_clean["city"] = (
     df_clean["city"]
     .str.strip()
@@ -100,50 +125,93 @@ df_clean["city"] = (
     .fillna(df_clean["city"].str.strip().str.title())
 )
 
-# Drop exact duplicate rows
-before_dup = len(df_clean)
+print(f"\n── Consistency Fix ──")
+print(f"   Canonical cities: {sorted(df_clean['city'].unique())}")
+print("   ✅ 'Bangalore' → 'Bengaluru', case/whitespace normalised.")
+
+# Uniqueness fix: drop exact duplicate rows
+rows_before = len(df_clean)
 df_clean = df_clean.drop_duplicates().reset_index(drop=True)
-print(f"\nDropped {before_dup - len(df_clean)} exact duplicate row(s)  "
-      f"({len(df_clean)} rows remain)")
+rows_after = len(df_clean)
+
+print(f"\n── Duplicate Removal ──")
+print(f"   Rows before : {rows_before}")
+print(f"   Rows after  : {rows_after}")
+print(f"   Dropped     : {rows_before - rows_after}")
+print(
+    "\n   ✅ Data Leakage prevention: identical rows can no longer"
+    "\n   appear in both Train and Test splits."
+)
 
 
 # =====================================================================
-# IMPUTATION — 3 methods taught side by side
+# STEP 2: Outlier Capping (Validity Fix)
+# =====================================================================
+sci_bad = (df_clean["marks_science"] < 0).sum()
+df_clean["marks_science"] = df_clean["marks_science"].clip(lower=0)
+
+att_bad = (df_clean["attendance_pct"] > 100).sum()
+df_clean["attendance_pct"] = df_clean["attendance_pct"].clip(upper=100)
+
+print(f"\n── Outlier Capping ──")
+print(f"   marks_science < 0  → capped to 0   ({sci_bad} row(s))")
+print(f"   attendance_pct > 100 → capped to 100 ({att_bad} row(s))")
+print(f"\n   Post-cap ranges:")
+print(f"     marks_science  : [{df_clean['marks_science'].min():.0f}, {df_clean['marks_science'].max():.0f}]")
+print(f"     attendance_pct : [{df_clean['attendance_pct'].min():.0f}, {df_clean['attendance_pct'].max():.0f}]")
+
+
+# =====================================================================
+# STEP 3: Imputation
 # =====================================================================
 print(f"\n{'=' * 60}")
 print("IMPUTATION METHODS")
 print("=" * 60)
 
-print(f"\nMissing values before imputation:")
+print("\n── Missing Values Before Imputation ──")
 missing = df_clean.isnull().sum()
 print(missing[missing > 0].to_string())
 
-# -----------------------------------------------------------------
-# Method 1: MEDIAN imputation  (robust to outliers in numeric data)
-# -----------------------------------------------------------------
-med_val = df_clean["marks_math"].median()
-df_clean["marks_math"] = df_clean["marks_math"].fillna(med_val)
-print(f"\n  [1] Median imputation   -> marks_math  filled with median = {med_val}")
+# --- Method 1: MEDIAN — attendance_pct ---
+att_median = df_clean["attendance_pct"].median()
+att_missing = df_clean["attendance_pct"].isna().sum()
+df_clean["attendance_pct"] = df_clean["attendance_pct"].fillna(att_median)
+print(f"\n  [1] Median imputation → attendance_pct")
+print(f"      Filled {att_missing} missing value(s) with median = {att_median}")
 
-# -----------------------------------------------------------------
-# Method 2: MODE imputation   (for categorical / discrete columns)
-# -----------------------------------------------------------------
-mode_val = df_clean["class"].mode()[0]
-df_clean["class"] = df_clean["class"].fillna(mode_val)
-print(f"  [2] Mode imputation     -> class        filled with mode  = '{mode_val}'")
+# --- Method 2: MODE — city ---
+city_missing = df_clean["city"].isna().sum()
+if city_missing > 0:
+    city_mode = df_clean["city"].mode()[0]
+    df_clean["city"] = df_clean["city"].fillna(city_mode)
+    print(f"\n  [2] Mode imputation → city")
+    print(f"      Filled {city_missing} missing value(s) with mode = '{city_mode}'")
+else:
+    print(f"\n  [2] Mode imputation → city")
+    print("      No missing values — skipped.")
 
-# -----------------------------------------------------------------
-# Method 3: KNN imputation    (uses similar rows to infer values)
-# -----------------------------------------------------------------
-knn_cols = ["attendance_pct", "marks_math", "marks_science", "marks_english"]
-imputer = KNNImputer(n_neighbors=3)
+# --- Method 3: KNN — marks_math ---
+math_missing = df_clean["marks_math"].isna().sum()
+print(f"\n  [3] KNN imputation → marks_math")
+print(f"      Missing values : {math_missing}")
+print("      Feature matrix : ['marks_science', 'attendance_pct', 'marks_math']")
+print("      k (neighbours) : 5")
+
+knn_cols = ["marks_science", "attendance_pct", "marks_math"]
+imputer = KNNImputer(n_neighbors=5)
 df_clean[knn_cols] = imputer.fit_transform(df_clean[knn_cols])
-print(f"  [3] KNN imputation (k=3)-> attendance_pct (+ numeric cols as features)")
 
-print(f"\nMissing values after imputation:")
+# Round marks to integers
+df_clean["marks_math"] = df_clean["marks_math"].round(0).astype(int)
+
+print("      ✅ KNN imputation complete.")
+print(f"      Missing marks_math remaining: {df_clean['marks_math'].isna().sum()}")
+
+# Final missing-value check
+print("\n── Missing Values After Imputation ──")
 remaining = df_clean.isnull().sum()
 if remaining.sum() == 0:
-    print("  None -- all missing values filled!")
+    print("   ✅ All missing values filled — dataset is complete.")
 else:
     print(remaining[remaining > 0].to_string())
 
@@ -154,7 +222,7 @@ else:
 after_scores = score_dataset(df_clean)
 
 print(f"\n{'=' * 60}")
-print("AFTER IMPUTATION — quality scores")
+print("AFTER CLEANING — Quality Scores")
 print("=" * 60)
 print(after_scores.to_string(index=False))
 print(f"Overall: {round(after_scores['score_pct'].mean(), 1)}%")
@@ -173,10 +241,9 @@ comparison["change_str"] = comparison["change"].apply(
 )
 
 before_overall = round(comparison["before_pct"].mean(), 1)
-after_overall  = round(comparison["after_pct"].mean(), 1)
+after_overall = round(comparison["after_pct"].mean(), 1)
 overall_change = round(after_overall - before_overall, 1)
 
-# Add overall row
 overall_row = pd.DataFrame([{
     "dimension":  "OVERALL",
     "before_pct": before_overall,
@@ -187,13 +254,17 @@ overall_row = pd.DataFrame([{
 comparison = pd.concat([comparison, overall_row], ignore_index=True)
 
 print(f"\n{'=' * 60}")
-print("COMPARISON: QA-Check Phase  vs  Imputation Phase")
+print("COMPARISON: Before vs After Cleaning")
 print("=" * 60)
 print(comparison[["dimension", "before_pct", "after_pct", "change_str"]].to_string(index=False))
+print(
+    f"\n🎯 Quality improvement: {before_overall}% → {after_overall}%"
+    f" ({'+' if overall_change > 0 else ''}{overall_change} pts)"
+)
 
 
 # =====================================================================
-# SAVE OUTPUT FOR NEXT STAGE
+# SAVE OUTPUT
 # =====================================================================
 output_file = os.path.join(DATA_DIR, "imputed_data.xlsx")
 with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
@@ -202,5 +273,17 @@ with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
     before_scores.to_excel(writer, sheet_name="scores_before", index=False)
     after_scores.to_excel(writer, sheet_name="scores_after", index=False)
 
-print(f"\nSaved : {output_file}")
-print("Sheets: clean_data, score_comparison, scores_before, scores_after")
+print(f"\n{'=' * 60}")
+print("  NOTEBOOK 4 COMPLETE ✅  |  PIPELINE COMPLETE 🏁")
+print("=" * 60)
+print(f"\n   Exported: {output_file}")
+print("   Sheets  : clean_data, score_comparison, scores_before, scores_after")
+print(f"   Final shape: {df_clean.shape[0]} rows × {df_clean.shape[1]} columns")
+print(
+    "\n   This dataset is now AI-ready:"
+    "\n     • No missing values (Median, Mode, KNN imputed)"
+    "\n     • No impossible values (hard-capped to valid ranges)"
+    "\n     • No duplicates (Data Leakage eliminated)"
+    "\n     • Consistent formatting (canonical city names)"
+    "\n     • teacher_notes preserved for downstream RAG/LLM pipeline"
+)
